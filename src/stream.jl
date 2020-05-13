@@ -41,15 +41,31 @@ The iterator element is a SheetRow.
 
 Base.show(io::IO, state::SheetRowStreamIteratorState) = print(io, "SheetRowStreamIteratorState( is open = $(state.is_open) , row = $(state.row) )")
 
+function zipreader(zrf)
+    # from ZipFile.jl - advance zipfile io to beginning of deflate stream
+    seek(zrf._io, zrf._offset)
+    ZipFile.readle(zrf._io, UInt32)
+    skip(zrf._io, 2+2+2+2+2+4+4+4)
+    filelen = ZipFile.readle(zrf._io, UInt16)
+    extralen = ZipFile.readle(zrf._io, UInt16)
+    skip(zrf._io, filelen+extralen)
+
+    return ZipFile.Zlib.Reader(zrf._io, true)
+ end
+
+Base.bytesavailable(r::ZipFile.Zlib.Reader) = bytesavailable(r.buf)
+
 # Opens a file for streaming.
-@inline function open_internal_file_stream(xf::XLSXFile, filename::String) :: Tuple{ZipFile.Reader, EzXML.StreamReader}
+@inline function open_internal_file_stream(xf::XLSXFile, filename::String)
     @assert internal_xml_file_exists(xf, filename) "Couldn't find $filename in $(xf.filepath)."
     @assert isfile(xf.filepath) "Can't open internal file $filename for streaming because the XLSX file $(xf.filepath) was not found."
     io = ZipFile.Reader(xf.filepath)
 
     for f in io.files
         if f.name == filename
-            return io, EzXML.StreamReader(f)
+            zlib_io = zipreader(f)
+            reader = EzXML.StreamReader(zlib_io)
+            return io, zlib_io, reader
         end
     end
 
@@ -63,6 +79,7 @@ end
         s.is_open = false
         close(s.xml_stream_reader)
         close(s.zip_io)
+        close(s.zlib_io)
     end
     nothing
 end
@@ -77,7 +94,7 @@ function Base.iterate(itr::SheetRowStreamIterator, state::Union{Nothing, SheetRo
     if state == nothing # first iteration. Will open a stream and create the first state instance
         state = let
             target_file = get_relationship_target_by_id("xl", get_workbook(ws), ws.relationship_id)
-            zip_io, reader = open_internal_file_stream(get_xlsxfile(ws), target_file)
+            zip_io, zlib_io, reader = open_internal_file_stream(get_xlsxfile(ws), target_file)
 
             # The reader will be positioned in the first row element inside sheetData
             # First, let's look for sheetData opening element
@@ -98,12 +115,13 @@ function Base.iterate(itr::SheetRowStreamIterator, state::Union{Nothing, SheetRo
                     # this Worksheet has no rows
                     close(reader)
                     close(zip_io)
+                    close(zlib_io)
                     return nothing
                 end
             end
 
             # row number is set to 0 in the first state
-            SheetRowStreamIteratorState(zip_io, reader, true, 0)
+            SheetRowStreamIteratorState(zip_io, zlib_io, reader, true, 0)
         end
     end
 

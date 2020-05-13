@@ -153,6 +153,7 @@ abstract type SheetRowIterator end
 
 mutable struct SheetRowStreamIteratorState
     zip_io::ZipFile.Reader
+    zlib_io::ZipFile.Zlib.Reader
     xml_stream_reader::EzXML.StreamReader
     is_open::Bool # indicated if zip_io and xml_stream_reader are opened
     row::Int # number of current row. It´s set to 0 in the start state.
